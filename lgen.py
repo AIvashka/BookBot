@@ -1,33 +1,127 @@
-token = "1396085398:AAHMxqWGiFKCyEdqZZufUrgoA1KyEsWADCs"
-
+#from uuid import uuid4
 import requests
-import urllib
-import bs4
-import re
+import telegram
+import logging
 import pandas as pd
-from pprint import pprint
-import os
-def getsearchresult(term, page, column):
-    params = urllib.parse.urlencode({'req': term, 'column': column, 'page': page})
+from telegram import ChatAction
+from telegram.ext import CommandHandler
+from telegram.ext import Updater
+import bs4
+import urllib
+import dataframe_image as dfi
+from telegram.ext import MessageHandler, Filters
+from functools import wraps
+
+
+
+def send_action(action):
+    """Sends `action` while processing func command."""
+
+    def decorator(func):
+        @wraps(func)
+        def command_func(update, context, *args, **kwargs):
+            context.bot.send_chat_action(chat_id=update.effective_message.chat_id, action=action)
+            return func(update, context, *args, **kwargs)
+
+        return command_func
+
+    return decorator
+
+send_typing_action = send_action(ChatAction.TYPING)
+send_doc_action = send_action(ChatAction.UPLOAD_DOCUMENT)
+token = "1396085398:AAHMxqWGiFKCyEdqZZufUrgoA1KyEsWADCs"
+booksfromrequest = None
+bokreq = None
+bot = telegram.Bot(token)
+updater = Updater(token=token, use_context=True)
+dispatcher = updater.dispatcher
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+def start(update, context):
+    context.bot.send_message(chat_id=update.effective_chat.id, text="Привет! Я бот, который поможет найти тебе нужную книгу! Отправь команду /books \"название или автор нужной тебе книги\"")
+    print(update.effective_chat.id)
+
+
+@send_typing_action
+def books(update, context):
+    request = context.args
+    global bokreq
+    bokreq = request
+    if len(request) == 0:
+        context.bot.send_message(chat_id=update.effective_chat.id, text="Неверный формат команды, введите название книги или автора после команды /books")
+    else:
+        context.bot.send_message(chat_id=update.effective_chat.id, text="Запрос на поиск книги получен, обрабатываю...")
+        df = getsearchresult(request, 1, "def")
+        if df.empty:
+            context.bot.send_message(chat_id=update.effective_chat.id, text="К сожалению, книги не найдены, попробуйте повторить поиск по другим ключевым словам")
+        else:
+            dfi.export(df, 'books.png')
+            context.bot.send_photo(chat_id=update.effective_chat.id, photo=open("books.png", 'rb'))
+            context.bot.send_message(chat_id=update.effective_chat.id, text="Введите команду \"/downl id\" ,чтобы скачать книгу (на место id укажите id нужной Вам книги). Если нужная книга не найдена, Вы можете поискать ее на другой странице, для этого введите команду /page и через пробел укажите номер страницы для повторного поиска, например \"/page 2\"")
+
+@send_doc_action
+def downl(update, context):
+    id = context.args
+    if len(id) == 0:
+        context.bot.send_message(chat_id=update.effective_chat.id, text="Неверный формат команды, после команды /downl через пробел напишите индекс книги, которую вы хотите скачать")
+    try:
+        id = int(id[0])
+    except:
+        context.bot.send_message(chat_id=update.effective_chat.id, text="Неверный формат команды, попробуйте еще раз (после команды не нужно писать слово id, только цифры)")
+    if booksfromrequest == None:
+        context.bot.send_message(chat_id=update.effective_chat.id, text="Книги не найдены")
+    url, ext, title, size = downloadBook(id, booksfromrequest)
+    with open("log.txt", "w") as log:
+        log.write(title + " " + size)
+    if size > 25:
+        context.bot.send_message(chat_id=update.effective_chat.id, text="Размер книги слишком большой, отправляю ссылку...")
+        context.bot.send_message(chat_id=update.effective_chat.id, text=url)
+    else:
+        context.bot.send_message(chat_id=update.effective_chat.id, text="Загружаю книгу...")
+        urllib.request.urlretrieve(url, f'yourbook.{ext}')
+        doc = open(f"yourbook.{ext}", "rb")
+        context.bot.send_document(chat_id=update.effective_chat.id, document=doc)
+        doc.close()
+
+def page(update, context):
+    if bokreq == None:
+        context.bot.send_message(chat_id=update.effective_chat.id,text="Введите книгу которую вы ходите искать с помощью команды /book после команды, через пробел напишите название нужной Вам книги")
+    else:
+        pag = context.args
+        if len(pag) == 0:
+            context.bot.send_message(chat_id=update.effective_chat.id, text="Неверный формат команды, после команды /page через пробел номер страницы на которую хотите перейти")
+        else:
+            try:
+                pag = int(pag[0])
+            except:
+                context.bot.send_message(chat_id=update.effective_chat.id, text="Неверный формат команды, попробуйте еще раз (после команды нужно написать номер страницы)")
+            df = getsearchresult(bokreq, pag, "def")
+            if df.empty:
+                context.bot.send_message(chat_id=update.effective_chat.id, text="К сожалению, книги не найдены, попробуйте повторить поиск по другим ключевым словам")
+            else:
+                dfi.export(df, 'books.png')
+                context.bot.send_photo(chat_id=update.effective_chat.id, photo=open("books.png", 'rb'))
+                context.bot.send_message(chat_id=update.effective_chat.id,
+                                     text="Введите команду \"/downl id\" , на место id укажите id нужной Вам книги")
+
+
+
+def unknown(update, context):
+    context.bot.send_message(chat_id=update.effective_chat.id, text="Извините, я не знаю такой команды :(")
+
+
+def getsearchresult(book, page, column):
+    params = urllib.parse.urlencode({'req': book, 'column': column, 'page': page})
     url = 'http://libgen.is/search.php?&%s' % params
-    #print(url)
     source = urllib.request.urlopen(url)
     soup = bs4.BeautifulSoup(source, 'lxml')
-    #print(soup)
-    """with open('htl.txt', 'w') as wr:
-        wr.write(str(soup))
-    """
-    '''
-    if page == 1:
-        books_found = re.search(r'title id=\d+', str(soup))
-        print(books_found)
-        print(books_found.group().upper())
-        n_books = int(books_found.groups()[0])
-    '''
     page_books = soup.find_all('tr')
     page_books = page_books[3:-1]  # Ignore 3 first and the last <tr> label.
     books = page_books
-    print(books)
+    global booksfromrequest
+    booksfromrequest = books
     id = []
     author = []
     title = []
@@ -48,265 +142,53 @@ def getsearchresult(term, page, column):
         language.append(s[6].text)
         size.append(s[7].text)
         extension.append(s[8].text)
-
     zi = list(zip(id, author, title, publisher, years, pages, language, size, extension))
     df = pd.DataFrame(zi, columns=["ID", "Author", "Title", "Publisher", "Year", "Pages", "Language", "Size", "Extension"])
     return df
 
+def getBooks(book, page, column):
+    params = urllib.parse.urlencode({'req': book, 'column': column, 'page': page})
+    url = 'http://libgen.is/search.php?&%s' % params
+    source = urllib.request.urlopen(url)
+    soup = bs4.BeautifulSoup(source, 'lxml')
+    page_books = soup.find_all('tr')
+    page_books = page_books[3:-1]  # Ignore 3 first and the last <tr> label.
+    books = page_books
+    return books
 
-df = getsearchresult("book", 1, "def")
-
-# modified from http://cssmenumaker.com/br/blog/stylish-css-tables-tutorial
-css = """<style type=\"text/css\">
-table {
-color: #333;
-font-family: Helvetica, Arial, sans-serif;
-width: 640px;
-border-collapse:
-collapse; 
-border-spacing: 0;
-}
-td, th {
-border: 1px solid transparent; /* No more visible border */
-height: 30px;
-}
-th {
-background: #DFDFDF; /* Darken header a bit */
-font-weight: bold;
-}
-td {
-background: #FAFAFA;
-text-align: center;
-}
-table tr:nth-child(odd) td{
-background-color: white;
-}
-</style>
-"""
-"""
-text_file = open("filename.html", "a")
-# write the CSS
-text_file.write(css)
-# write the HTML-ized Pandas DataFrame
-text_file.write(df.to_html())
-text_file.close()
-
-"""
-"""
-import imgkit
-import os
-path = "/Users/ivashkaleha/PycharmProjects/newlgen/venv/lib/python3.8/site-packages/wkhtmltopdf"
-config = imgkit.config(wkhtmltoimage=path)
-imgkit.from_url('http://google.com', 'out.jpg')
-#img = imgkit.from_url('http://google.com', False)
-#print(img)
-#imgkitoptions = {"format": "png"}
-imgkit.from_file("filename.html", "/Users/ivashkaleha/Desktop/output.png", config=config)
-print("sdf")
-"""
-
-from bokeh.io import export_png, export_svgs
-from bokeh.models import ColumnDataSource, DataTable, TableColumn
-
-"""
-def save_df_as_image(df, path):
-    source = ColumnDataSource(df)
-    df_columns = [df.index.name]
-    df_columns.extend(df.columns.values)
-    columns_for_table=[]
-    for column in df_columns:
-        columns_for_table.append(TableColumn(field=column, title=column))
-
-    data_table = DataTable(source=source, columns=columns_for_table, height_policy="auto", width_policy="max", index_position=None)
-    export_png(data_table, filename=path, width=10)
-
-save_df_as_image(df, "/Users/ivashkaleha/Desktop/output.png")
-"""
+def downloadBook(id, books):
+    for book in books:
+        s = book.find_all("td")
+        if id == int(s[0].text):
+            #print('Downloading...')
+            extention = s[8].text
+            title = s[2].text
+            size = int(s[7].text)
+            mirrors = [s[i].find("a").attrs['href'] for i in range(9,14)]
+            #print(mirrors)
+            source = urllib.request.urlopen(mirrors[0])
+            soup = bs4.BeautifulSoup(source, 'lxml')
+            urls = soup.find_all("a")
+            for url in urls:
+                if url.text == "GET":
+                    urla = url.attrs["href"]
+                    break
+            return urla, extention, title, size
 
 
-import dataframe_image as dfi
-dfi.export(df, 'foto.png')
+start_handler = CommandHandler('start', start)
+dispatcher.add_handler(start_handler)
 
+books_handler = CommandHandler('books', books)
+dispatcher.add_handler(books_handler)
 
-class DownloadBook():
-    user_agent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.11 (KHTML, like Gecko) Chrome/23.0.1271.64 Safari/537.11'
-    accept = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-    accept_charset = 'ISO-8859-1,utf-8;q=0.7,*;q=0.3'
-    accept_lang = 'en-US,en;q=0.8'
-    connection = 'keep-alive'
+downl_handler = CommandHandler('downl', downl)
+dispatcher.add_handler(downl_handler)
 
-    headers = {
-        'User-Agent': user_agent,
-        'Accept': accept,
-        'Accept-Charset': accept_charset,
-        'Accept-Language': accept_lang,
-        'Connection': connection,
-    }
+page_handler = CommandHandler('page', page)
+dispatcher.add_handler(page_handler)
 
-    DOWNLOAD_PATH = "."
+unknown_handler = MessageHandler(Filters.command, unknown)
+dispatcher.add_handler(unknown_handler)
 
-    def save_book(download_link, file_name):
-        if os.path.exists(DOWNLOAD_PATH) and os.path.isdir(DOWNLOAD_PATH):
-            bad_chars = '\/:*?"<>|'
-            for char in bad_chars:
-                file_name = file_name.replace(char, " ")
-            print('Downloading...')
-            path = '{}/{}'.format(DOWNLOAD_PATH, file_name)
-            requests.request.urlretrieve(download_link, filename=path)
-            print('Book downloaded to {}'.format(os.path.abspath(path)))
-        elif os.path.isfile(DOWNLOAD_PATH):
-            print('The download path is not a directory. Change it in settings.py')
-        else:
-            print('The download path does not exist. Change it in settings.py')
-
-    def default_mirror(link, filename):
-        '''This is the default (and first) mirror to download.
-        The base of this mirror is http://booksdescr.org'''
-        req = urllib.request.Request(link, headers=DownloadBook.headers)
-        source = requests.request.urlopen(req)
-        soup = bs4.BeautifulSoup(source, 'lxml')
-
-        for a in soup.find_all('a'):
-            if a.text == 'Libgen':
-                download_url = a.attrs['href']
-                DownloadBook.save_book(download_url, filename)
-
-
-    def second_mirror(link, filename):
-        '''This is the second mirror to download.
-        The base of this mirror is https://libgen.me'''
-        req = urllib.request.Request(link, headers=DownloadBook.headers)
-        source = urllib.request.urlopen(req)
-        soup = bs4.BeautifulSoup(source, 'lxml')
-        mother_url = "https://libgen.me"
-
-        for a in soup.find_all('a'):
-            if a.text == 'Get from vault':
-                next_link = a.attrs['href']
-                next_req = urllib.request.Request(mother_url + next_link, headers=DownloadBook.headers)
-                next_source = urllib.request.urlopen(next_req)
-                next_soup = bs4.BeautifulSoup(next_source, 'lxml')
-                for next_a in next_soup.find_all('a'):
-                    if next_a.text == 'Get':
-                        item_url = next_a.attrs['href']
-                        DownloadBook.save_book(item_url, filename)
-
-    def third_mirror(link, filename):
-        '''This is the third mirror to download.
-        The base of this mirror is http://library1.org'''
-        req = requests.request.Request(link, headers=DownloadBook.headers)
-        source = requests.request.urlopen(req)
-        soup = bs4.BeautifulSoup(source, 'lxml')
-
-        for a in soup.find_all('a'):
-            if a.text == 'GET':
-                download_url = a.attrs['href']
-                DownloadBook.save_book(download_url, filename)
-
-    def fourth_mirror(link, filename):
-        '''This is the fourth mirror to download.
-        The base of this mirror is https://b-ok.cc'''
-        req = requests.request.Request(link, headers=DownloadBook.headers)
-        source = requests.request.urlopen(req)
-        soup = bs4.BeautifulSoup(source, 'lxml')
-        mother_url = "https://b-ok.cc"
-
-        for a in soup.find_all('a'):
-            if a.text == 'DOWNLOAD':
-                next_link = a.attrs['href']
-                next_req = requests.request.Request(mother_url + next_link, headers=DownloadBook.headers)
-                next_source = requests.request.urlopen(next_req)
-                next_soup = bs4.BeautifulSoup(next_source, 'lxml')
-                for next_a in next_soup.find_all('a'):
-                    if ' Download  ' in next_a.text:
-                        item_url = next_a.attrs['href']
-                        DownloadBook.save_book(mother_url + item_url, filename)
-
-    def fifth_mirror(link, filename):
-        '''This is the fifth mirror to download.
-        The base of this mirror is https://bookfi.net'''
-        req = requests.request.Request(link, headers=DownloadBook.headers)
-        source = requests.request.urlopen(req)
-        soup = bs4.BeautifulSoup(source, 'lxml')
-
-        for a in soup.find_all('a'):
-            if 'Скачать' in a.text:
-                download_url = a.attrs['href']
-                DownloadBook.save_book(download_url, filename)
-
-
-import requests
-import datetime
-
-class BotHandler:
-
-    def __init__(self, token):
-        self.token = token
-        self.api_url = "https://api.telegram.org/bot{}/".format(token)
-
-    def get_updates(self, offset=None, timeout=30):
-        method = 'getUpdates'
-        params = {'timeout': timeout, 'offset': offset}
-        resp = requests.get(self.api_url + method, params)
-        result_json = resp.json()['result']
-        return result_json
-
-    def send_message(self, chat_id, text):
-        params = {'chat_id': chat_id, 'text': text}
-        method = 'sendMessage'
-        resp = requests.post(self.api_url + method, params)
-        return resp
-
-    def get_last_update(self):
-        get_result = self.get_updates()
-
-        if len(get_result) > 0:
-            last_update = get_result[-1]
-        else:
-            last_update = get_result[len(get_result)]
-
-        return last_update
-
-
-
-
-
-
-def main():
-    greet_bot = BotHandler(token)
-    greetings = ('здравствуй', 'привет', 'ку', 'здорово')
-    now = datetime.datetime.now()
-
-    new_offset = None
-    today = now.day
-    hour = now.hour
-
-    while True:
-        greet_bot.get_updates(new_offset)
-
-        last_update = greet_bot.get_last_update()
-
-        last_update_id = last_update['update_id']
-        last_chat_text = last_update['message']['text']
-        last_chat_id = last_update['message']['chat']['id']
-        last_chat_name = last_update['message']['chat']['first_name']
-
-        if last_chat_text.lower() in greetings and today == now.day and 6 <= hour < 12:
-            greet_bot.send_message(last_chat_id, 'Доброе утро, {}'.format(last_chat_name))
-            today += 1
-
-        elif last_chat_text.lower() in greetings and today == now.day and 12 <= hour < 17:
-            greet_bot.send_message(last_chat_id, 'Добрый день, {}'.format(last_chat_name))
-            today += 1
-
-        elif last_chat_text.lower() in greetings and today == now.day and 17 <= hour < 23:
-            greet_bot.send_message(last_chat_id, 'Добрый вечер, {}'.format(last_chat_name))
-            today += 1
-
-        new_offset = last_update_id + 1
-
-if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        exit()
+updater.start_polling()
