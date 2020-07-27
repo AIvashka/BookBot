@@ -75,7 +75,8 @@ def downl(update, context):
     url, ext, title, size = downloadBook(id, booksfromrequest)
     with open("log.txt", "w") as log:
         log.write(title + " " + size)
-    if size > 25:
+
+    if int(size) > 25:
         context.bot.send_message(chat_id=update.effective_chat.id, text="Размер книги слишком большой, отправляю ссылку...")
         context.bot.send_message(chat_id=update.effective_chat.id, text=url)
     else:
@@ -163,7 +164,8 @@ def downloadBook(id, books):
             #print('Downloading...')
             extention = s[8].text
             title = s[2].text
-            size = int(s[7].text)
+            size = s[7].text.split()
+            size = size[0]
             mirrors = [s[i].find("a").attrs['href'] for i in range(9,14)]
             #print(mirrors)
             source = urllib.request.urlopen(mirrors[0])
@@ -192,3 +194,6 @@ unknown_handler = MessageHandler(Filters.command, unknown)
 dispatcher.add_handler(unknown_handler)
 
 updater.start_polling()
+
+
+
