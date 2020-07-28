@@ -10,25 +10,10 @@ import bs4
 import urllib
 import dataframe_image as dfi
 from telegram.ext import MessageHandler, Filters
-from functools import wraps
+import os
+PORT = int(os.environ.get('PORT', 5000))
 
 
-
-def send_action(action):
-    """Sends `action` while processing func command."""
-
-    def decorator(func):
-        @wraps(func)
-        def command_func(update, context, *args, **kwargs):
-            context.bot.send_chat_action(chat_id=update.effective_message.chat_id, action=action)
-            return func(update, context, *args, **kwargs)
-
-        return command_func
-
-    return decorator
-
-send_typing_action = send_action(ChatAction.TYPING)
-send_doc_action = send_action(ChatAction.UPLOAD_DOCUMENT)
 token = "1396085398:AAHMxqWGiFKCyEdqZZufUrgoA1KyEsWADCs"
 booksfromrequest = None
 bokreq = None
@@ -44,7 +29,6 @@ def start(update, context):
     print(update.effective_chat.id)
 
 
-@send_typing_action
 def books(update, context):
     request = context.args
     global bokreq
@@ -53,6 +37,7 @@ def books(update, context):
         context.bot.send_message(chat_id=update.effective_chat.id, text="Неверный формат команды, введите название книги или автора после команды /books")
     else:
         context.bot.send_message(chat_id=update.effective_chat.id, text="Запрос на поиск книги получен, обрабатываю...")
+        context.bot.send_chat_action(chat_id=update.effective_message.chat_id, action=ChatAction.UPLOAD_PHOTO)
         df = getsearchresult(request, 1, "def")
         if df.empty:
             context.bot.send_message(chat_id=update.effective_chat.id, text="К сожалению, книги не найдены, попробуйте повторить поиск по другим ключевым словам")
@@ -61,7 +46,7 @@ def books(update, context):
             context.bot.send_photo(chat_id=update.effective_chat.id, photo=open("books.png", 'rb'))
             context.bot.send_message(chat_id=update.effective_chat.id, text="Введите команду \"/downl id\" ,чтобы скачать книгу (на место id укажите id нужной Вам книги). Если нужная книга не найдена, Вы можете поискать ее на другой странице, для этого введите команду /page и через пробел укажите номер страницы для повторного поиска, например \"/page 2\"")
 
-@send_doc_action
+
 def downl(update, context):
     id = context.args
     if len(id) == 0:
@@ -72,19 +57,27 @@ def downl(update, context):
         context.bot.send_message(chat_id=update.effective_chat.id, text="Неверный формат команды, попробуйте еще раз (после команды не нужно писать слово id, только цифры)")
     if booksfromrequest == None:
         context.bot.send_message(chat_id=update.effective_chat.id, text="Книги не найдены")
-    url, ext, title, size = downloadBook(id, booksfromrequest)
-    with open("log.txt", "w") as log:
-        log.write(title + " " + size)
-
+    try:
+        url, ext, title, size = downloadBook(id, booksfromrequest)
+        with open("log.txt", "a") as log:
+            log.write(title + " " + size)
+    except:
+        context.bot.send_message(chat_id=update.effective_chat.id, text="Что-то пошло не так, проверьте верно ли введен id книги")
     if int(size) > 25:
         context.bot.send_message(chat_id=update.effective_chat.id, text="Размер книги слишком большой, отправляю ссылку...")
         context.bot.send_message(chat_id=update.effective_chat.id, text=url)
     else:
         context.bot.send_message(chat_id=update.effective_chat.id, text="Загружаю книгу...")
-        urllib.request.urlretrieve(url, f'yourbook.{ext}')
-        doc = open(f"yourbook.{ext}", "rb")
-        context.bot.send_document(chat_id=update.effective_chat.id, document=doc)
-        doc.close()
+        try:
+            context.bot.send_chat_action(chat_id=update.effective_message.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
+            urllib.request.urlretrieve(url, f'{title}.{ext}')
+            doc = open(f"{title}.{ext}", "rb")
+            context.bot.send_document(chat_id=update.effective_chat.id, document=doc)
+            doc.close()
+            os.remove(f'{title}.{ext}')
+        except:
+            context.bot.send_message(chat_id=update.effective_chat.id,
+                                     text="Случилась ошибка, книга не загружена, попробуйте еще раз")
 
 def page(update, context):
     if bokreq == None:
@@ -119,7 +112,7 @@ def getsearchresult(book, page, column):
     source = urllib.request.urlopen(url)
     soup = bs4.BeautifulSoup(source, 'lxml')
     page_books = soup.find_all('tr')
-    page_books = page_books[3:-1]  # Ignore 3 first and the last <tr> label.
+    page_books = page_books[3:-1]
     books = page_books
     global booksfromrequest
     booksfromrequest = books
@@ -143,6 +136,16 @@ def getsearchresult(book, page, column):
         language.append(s[6].text)
         size.append(s[7].text)
         extension.append(s[8].text)
+    if len(id) == 1:
+        id.append(" ")
+        author.append(" ")
+        title.append(" ")
+        publisher.append(" ")
+        years.append(" ")
+        pages.append(" ")
+        language.append(" ")
+        size.append(" ")
+        extension.append(" ")
     zi = list(zip(id, author, title, publisher, years, pages, language, size, extension))
     df = pd.DataFrame(zi, columns=["ID", "Author", "Title", "Publisher", "Year", "Pages", "Language", "Size", "Extension"])
     return df
@@ -153,7 +156,7 @@ def getBooks(book, page, column):
     source = urllib.request.urlopen(url)
     soup = bs4.BeautifulSoup(source, 'lxml')
     page_books = soup.find_all('tr')
-    page_books = page_books[3:-1]  # Ignore 3 first and the last <tr> label.
+    page_books = page_books[3:-1]
     books = page_books
     return books
 
@@ -193,7 +196,10 @@ dispatcher.add_handler(page_handler)
 unknown_handler = MessageHandler(Filters.command, unknown)
 dispatcher.add_handler(unknown_handler)
 
-updater.start_polling()
+updater.start_webhook(listen="0.0.0.0",
+                          port=int(PORT),
+                          url_path=token)
+updater.bot.setWebhook('https://yourherokuappname.herokuapp.com/https://sleepy-beyond-10359.herokuapp.com/' + token)
 
 
 
